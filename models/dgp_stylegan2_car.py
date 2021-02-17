@@ -6,17 +6,17 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import torchvision
+import utils
 from PIL import Image
 from skimage import color
 from skimage.measure import compare_psnr, compare_ssim
 from torch.autograd import Variable
 
-import models
-import utils
+import models.stylegan2 as models
 from models.downsampler import Downsampler
 
 
-class DGP(object):
+class DGPStyleGAN2(object):
 
     def __init__(self, config):
         self.rank, self.world_size = 0, 1
@@ -26,7 +26,7 @@ class DGP(object):
         self.config = config
         self.mode = config['dgp_mode']
         self.update_G = config['update_G']
-        self.update_embed = config['update_embed']  # TODO
+        self.update_embed = config['update_embed']
         self.iterations = config['iterations']
         self.ftr_num = config['ftr_num']
         self.ft_num = config['ft_num']
@@ -35,44 +35,30 @@ class DGP(object):
         self.z_lrs = config['z_lrs']
         self.use_in = config['use_in']
         self.select_num = config['select_num']
-        self.factor = 2 if self.mode == 'hybrid' else 4  # Downsample factor
-        self.arch = config['arch']
+        # self.factor = 2 if self.mode == 'hybrid' else 4  # Downsample factor
+        self.factor = 16
 
         # create model
-        Generator, Discriminator = models.get_model(self.arch)
+        # out_size = config['out_size']
+        out_size = 512
 
-        self.G = Generator(**config).cuda()
-        self.D = Discriminator(**config).cuda() if config['ftr_type'] == 'Discriminator' else None
-
-        model_size = len(self.G.blocks) + 1 if self.arch == 'biggan' else self.G.log_size
+        self.G = models.Generator(out_size).cuda()
+        self.D = models.Discriminator(out_size).cuda()
+        tmp = [{'params': self.G.get_params(i, self.update_embed)} for i in range(self.G.log_size)]
         self.G.optim = torch.optim.Adam([{
             'params': self.G.get_params(i, self.update_embed)
-        } for i in range(model_size)],
+        } for i in range(self.G.log_size)],
                                         lr=config['G_lr'],
                                         betas=(config['G_B1'], config['G_B2']),
                                         weight_decay=0,
                                         eps=1e-8)
-
         # load weights
-        if config['random_G']:
-            self.random_G()
-        else:
-            if config['arch'] == 'biggan':
-                utils.load_weights(
-                    self.G if not (config['use_ema']) else None,
-                    self.D,
-                    config['weights_root'],
-                    name_suffix=config['load_weights'],
-                    G_ema=self.G if config['use_ema'] else None,
-                    strict=False)
-            elif config['arch'] == 'stylegan':
-                ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
-                ckpt_d = torch.load(config['ckpt_d'], map_location=lambda storage, loc: storage)
-                # if config['use_ema']:
-                self.G.load_state_dict(ckpt_g["params_ema"])
-                self.D.load_state_dict(ckpt_d["params"])
-            else:
-                raise NotImplementedError
+        generator_path = '../GANFusion/experiments/pretrained_models/stylegan2-car-gen.pth'
+        discriminator_path = '../GANFusion/experiments/pretrained_models/stylegan2-car-disc.pth'
+        self.G.load_state_dict(
+            torch.load(generator_path, map_location='cpu')['params_ema'], strict=True)
+        self.D.load_state_dict(
+            torch.load(discriminator_path, map_location='cpu')['params'], strict=True)
 
         self.G.eval()
         if self.D is not None:
@@ -80,7 +66,7 @@ class DGP(object):
         self.G_weight = deepcopy(self.G.state_dict())
 
         # prepare latent variable and optimizer
-        self._prepare_latent(config['z_size'])
+        self._prepare_latent()
         # prepare learning rate scheduler
         self.G_scheduler = utils.LRScheduler(self.G.optim, config['warm_up'])
         self.z_scheduler = utils.LRScheduler(self.z_optim, config['warm_up'])
@@ -100,11 +86,8 @@ class DGP(object):
             n_planes=3, factor=self.factor, kernel_type='lanczos2', phase=0.5,
             preserve_size=True).type(torch.cuda.FloatTensor)
 
-    def _prepare_latent(
-        self,
-        z_size=1,
-    ):
-        self.z = torch.zeros((z_size, self.G.dim_z)).normal_().cuda()  # * normal
+    def _prepare_latent(self):
+        self.z = torch.zeros((1, 512)).normal_().cuda()
         self.z = Variable(self.z, requires_grad=True)
         self.z_optim = torch.optim.Adam([{
             'params': self.z,
@@ -113,7 +96,7 @@ class DGP(object):
                                         betas=(self.config['G_B1'], self.config['G_B2']),
                                         weight_decay=0,
                                         eps=1e-8)
-        self.y = torch.zeros(z_size).long().cuda()
+        # self.y = torch.zeros(1).long().cuda()
 
     def reset_G(self):
         self.G.load_state_dict(self.G_weight, strict=False)
@@ -127,10 +110,11 @@ class DGP(object):
         self.G.init_weights()
 
     def set_target(self, target, category, img_path):
-        self.target_origin = target
+        # self.target_origin = target
         # apply degradation transform to the original image
-        self.target = self.pre_process(target, True)
-        self.y.fill_(category.item())
+        # self.target = self.pre_process(target, True)
+        self.target = F.interpolate(target, scale_factor=self.factor, mode='bilinear')
+        # self.y.fill_(category.item())
         self.img_name = img_path[img_path.rfind('/') + 1:img_path.rfind('.')]
 
     def run(self, save_interval=None):
@@ -153,17 +137,15 @@ class DGP(object):
                 self.z_optim.zero_grad()
                 if self.update_G:
                     self.G.optim.zero_grad()
-                if self.arch == 'biggan':
-                    x = self.G(self.z, self.G.shared(self.y), use_in=self.use_in[stage])
-                elif self.arch == 'stylegan':
-                    x = self.G([self.z])
+                x = self.G(self.z)
+
                 # apply degradation transform
                 x_map = self.pre_process(x, False)
-
+                # x_map = x.clone()
                 # calculate losses in the degradation space
                 ftr_loss = self.criterion(self.ftr_net, x_map, self.target)
                 mse_loss = self.mse(x_map, self.target)
-                # nll corresponds to a negative log-likelihood loss # TODO
+                # nll corresponds to a negative log-likelihood loss
                 nll = self.z**2 / 2
                 nll = nll.mean()
                 l1_loss = F.l1_loss(x_map, self.target)
@@ -244,7 +226,6 @@ class DGP(object):
         if self.mode == 'jitter':
             # conduct random jittering
             self.jitter(x)
-
         if self.config['save_G']:
             torch.save(self.G.state_dict(),
                        '%s/G_%s_%s.pth' % (self.config['exp_path'], self.img_name, self.mode))
@@ -252,7 +233,7 @@ class DGP(object):
                        '%s/z_%s_%s.pth' % (self.config['exp_path'], self.img_name, self.mode))
         return loss_dict
 
-    def select_z(self, select_y=False, load_z_path=''):
+    def select_z(self, select_y=False):
         with torch.no_grad():
             if self.select_num == 0:
                 self.z.zero_()
@@ -261,51 +242,30 @@ class DGP(object):
                 self.z.normal_()
                 return
             z_all, y_all, loss_all = [], [], []
-            self.criterion.set_ftr_num(3)
             if self.rank == 0:
-                if load_z_path != '':
-                    print('loading initialized z from {}'.format(load_z_path))
-                else:
-                    print('Selecting z from {} samples'.format(self.select_num))
-
-            if load_z_path != '':
-                z_init = torch.load(load_z_path).cuda()
-                for z in z_init[:, None]:
-                    x = self.G(z, self.G.shared(self.y))
-                    x = self.pre_process(x)
-                    z_all.append(z.cpu())
-                    ftr_loss = self.criterion(self.ftr_net, x, self.target)
-                    loss_all.append(ftr_loss.view(1).cpu())
-            else:
-                for i in range(self.select_num):
-                    self.z.normal_(mean=0, std=self.config['sample_std'])
-                    z_all.append(self.z.cpu())
-                    if select_y:
-                        self.y.random_(0, self.config['n_classes'])
-                        y_all.append(self.y.cpu())
-                    if self.arch == 'biggan':
-                        x = self.G(self.z, self.G.shared(self.y))
-                    elif self.arch == 'stylegan':
-                        x = self.G(self.z)
-                    else:
-                        raise NotImplementedError
-                    x = self.pre_process(x)
-                    # import ipdb
-                    # ipdb.set_trace()
-                    ftr_loss = self.criterion(self.ftr_net, x, self.target)
-                    loss_all.append(ftr_loss.view(1).cpu())
-                    if self.rank == 0 and (i + 1) % 100 == 0:
-                        print('Generating {}th sample'.format(i + 1))
-
+                print('Selecting z from {} samples'.format(self.select_num))
+            # only use last 3 discriminator features to compare
+            self.criterion.set_ftr_num(3)
+            for i in range(self.select_num):
+                self.z.normal_(mean=0, std=self.config['sample_std'])
+                z_all.append(self.z.cpu())
+                if select_y:
+                    self.y.random_(0, self.config['n_classes'])
+                    y_all.append(self.y.cpu())
+                x = self.G(self.z)
+                x = self.pre_process(x)
+                ftr_loss = self.criterion(self.ftr_net, x, self.target)
+                loss_all.append(ftr_loss.view(1).cpu())
+                if self.rank == 0 and (i + 1) % 100 == 0:
+                    print('Generating {}th sample'.format(i + 1))
             loss_all = torch.cat(loss_all)
             idx = torch.argmin(loss_all)
             self.z.copy_(z_all[idx])
-
             if select_y:
                 self.y.copy_(y_all[idx])
             self.criterion.set_ftr_num(self.ftr_num[0])
 
-    def pre_process(self, image, target=True):
+    def pre_process(self, image, target=True, down_sample=False):
         if self.mode in ['SR', 'hybrid']:
             # apply downsampling, this part is the same as deep image prior
             if target:
@@ -317,8 +277,10 @@ class DGP(object):
             else:
                 image = self.downsampler((image + 1) / 2)
                 image = image * 2 - 1
+
             # interpolate to the orginal resolution via bilinear interpolation
             image = F.interpolate(image, scale_factor=self.factor, mode='bilinear')
+
         n, _, h, w = image.size()
         if self.mode in ['colorization', 'hybrid']:
             # transform the image to gray-scale
@@ -340,6 +302,8 @@ class DGP(object):
 
     def get_metrics(self, x):
         with torch.no_grad():
+            # print(x.size())
+            # print(self.target_origin.size())
             l1_loss_origin = F.l1_loss(x, self.target_origin) / 2
             mse_loss_origin = self.mse(x, self.target_origin) / 4
             metrics = {'l1_loss_origin': l1_loss_origin, 'mse_loss_origin': mse_loss_origin}
@@ -379,7 +343,8 @@ class DGP(object):
                     # add random noise to the latent vector
                     z_rand.normal_()
                     z = self.z + std * z_rand
-                    x_jitter = self.G(z, self.G.shared(self.y))
+                    # x_jitter = self.G(z, self.G.shared(self.y))
+                    x_jitter = self.G(z)
                     utils.save_img(x_jitter[0], '%s/std%.1f_%d.jpg' % (save_path, std, i))
                     save_imgs = torch.cat((save_imgs, x_jitter.cpu()), dim=0)
 

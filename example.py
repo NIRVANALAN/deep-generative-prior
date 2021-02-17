@@ -9,22 +9,30 @@ import torchvision.utils as vutils
 import utils
 from models import DGP
 
+import ipdb
+
 sys.path.append("./")
 
 
 # Arguments for demo
 def add_example_parser(parser):
     parser.add_argument(
-        '--image_path', type=str, default='',
+        '--image_path',
+        type=str,
+        default='',
         help='Path of the image to be processed (default: %(default)s)')
     parser.add_argument(
-        '--class', type=int, default=-1,
-        help='class index of the image (default: %(default)s)')
+        '--class', type=int, default=-1, help='class index of the image (default: %(default)s)')
     parser.add_argument(
-        '--image_path2', type=str, default='',
-        help='Path of the 2nd image to be processed, used in "morphing" mode (default: %(default)s)')
+        '--image_path2',
+        type=str,
+        default='',
+        help='Path of the 2nd image to be processed, used in "morphing" mode (default: %(default)s)'
+    )
     parser.add_argument(
-        '--class2', type=int, default=-1,
+        '--class2',
+        type=int,
+        default=-1,
         help='class index of the 2nd image, used in "morphing" mode (default: %(default)s)')
     return parser
 
@@ -49,23 +57,33 @@ dgp = DGP(config)
 
 # prepare the target image
 img = utils.get_img(config['image_path'], config['resolution']).cuda()
-category = torch.Tensor([config['class']]).long().cuda()
-dgp.set_target(img, category, config['image_path'])
+
+if config['arch'] == 'biggan':
+    category = torch.Tensor([config['class']]).long().cuda()
+    dgp.set_target(img, category, config['image_path'])
 
 # prepare initial latent vector
 dgp.select_z(select_y=True if config['class'] < 0 else False)
 # start reconstruction
 loss_dict = dgp.run()
 
-if config['dgp_mode'] == 'category_transfer':
+if config['dgp_mode'] == 'category_transfer':  # TODO?
     save_imgs = img.clone().cpu()
-    for i in range(151, 294):  # dog & cat
-    # for i in range(7, 25):  # bird
+    for i in (
+            565,
+            575,
+            603,
+            705,
+            751,
+            791,
+            817,
+            829,
+    ):  # cars
+        # for i in range(151, 294):  # dog & cat
+        # for i in range(7, 25):  # bird
         with torch.no_grad():
             x = dgp.G(dgp.z, dgp.G.shared(dgp.y.fill_(i)))
-            utils.save_img(
-                x[0],
-                '%s/images/%s_class%d.jpg' % (config['exp_path'], dgp.img_name, i))
+            utils.save_img(x[0], '%s/images/%s_class%d.jpg' % (config['exp_path'], dgp.img_name, i))
             save_imgs = torch.cat((save_imgs, x.cpu()), dim=0)
     vutils.save_image(
         save_imgs,

@@ -170,7 +170,7 @@ class Generator(nn.Module):
         bn_linear = (
             functools.partial(self.which_linear, bias=False)
             if self.G_shared else self.which_embedding)
-        self.which_bn = functools.partial(
+        self.which_bn = functools.partial(  #TODO
             layers.ccbn,
             which_linear=bn_linear,
             cross_replica=self.cross_replica,

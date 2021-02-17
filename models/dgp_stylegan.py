@@ -14,9 +14,13 @@ from torch.autograd import Variable
 import models
 import utils
 from models.downsampler import Downsampler
+from .stylegan2 import Discriminator
+from .stylegan2 import Generator
+
+import ipdb
 
 
-class DGP(object):
+class DGPStyleGAN(object):
 
     def __init__(self, config):
         self.rank, self.world_size = 0, 1
@@ -39,40 +43,28 @@ class DGP(object):
         self.arch = config['arch']
 
         # create model
-        Generator, Discriminator = models.get_model(self.arch)
+        # Generator, Discriminator = models.get_model(self.arch)
 
-        self.G = Generator(**config).cuda()
-        self.D = Discriminator(**config).cuda() if config['ftr_type'] == 'Discriminator' else None
+        output_size = config['resolution']
+        self.G = Generator(output_size).cuda()
+        self.D = Discriminator(
+            output_size).cuda() if config['ftr_type'] == 'Discriminator' else None
 
-        model_size = len(self.G.blocks) + 1 if self.arch == 'biggan' else self.G.log_size
-        self.G.optim = torch.optim.Adam([{
-            'params': self.G.get_params(i, self.update_embed)
-        } for i in range(model_size)],
-                                        lr=config['G_lr'],
-                                        betas=(config['G_B1'], config['G_B2']),
-                                        weight_decay=0,
-                                        eps=1e-8)
+        self.G.optim = torch.optim.Adam(
+            [{
+                'params': self.G.get_params(i, self.update_embed)
+            } for i in range(self.G.log_size)],  #! need double check
+            lr=config['G_lr'],
+            betas=(config['G_B1'], config['G_B2']),
+            weight_decay=0,
+            eps=1e-8)
 
         # load weights
-        if config['random_G']:
-            self.random_G()
-        else:
-            if config['arch'] == 'biggan':
-                utils.load_weights(
-                    self.G if not (config['use_ema']) else None,
-                    self.D,
-                    config['weights_root'],
-                    name_suffix=config['load_weights'],
-                    G_ema=self.G if config['use_ema'] else None,
-                    strict=False)
-            elif config['arch'] == 'stylegan':
-                ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
-                ckpt_d = torch.load(config['ckpt_d'], map_location=lambda storage, loc: storage)
-                # if config['use_ema']:
-                self.G.load_state_dict(ckpt_g["params_ema"])
-                self.D.load_state_dict(ckpt_d["params"])
-            else:
-                raise NotImplementedError
+        # ckpt = torch.load(config['ckpt'], map_location=lambda storage, loc: storage)
+        self.G.load_state_dict(
+            torch.load(config['ckpt_g'], map_location='cpu')['params_ema'], strict=True)
+        self.D.load_state_dict(
+            torch.load(config['ckpt_d'], map_location='cpu')['params'], strict=True)
 
         self.G.eval()
         if self.D is not None:
@@ -80,7 +72,7 @@ class DGP(object):
         self.G_weight = deepcopy(self.G.state_dict())
 
         # prepare latent variable and optimizer
-        self._prepare_latent(config['z_size'])
+        self._prepare_latent()
         # prepare learning rate scheduler
         self.G_scheduler = utils.LRScheduler(self.G.optim, config['warm_up'])
         self.z_scheduler = utils.LRScheduler(self.z_optim, config['warm_up'])
@@ -100,11 +92,8 @@ class DGP(object):
             n_planes=3, factor=self.factor, kernel_type='lanczos2', phase=0.5,
             preserve_size=True).type(torch.cuda.FloatTensor)
 
-    def _prepare_latent(
-        self,
-        z_size=1,
-    ):
-        self.z = torch.zeros((z_size, self.G.dim_z)).normal_().cuda()  # * normal
+    def _prepare_latent(self):
+        self.z = torch.zeros((1, self.G.dim_z)).normal_().cuda()  # * normal
         self.z = Variable(self.z, requires_grad=True)
         self.z_optim = torch.optim.Adam([{
             'params': self.z,
@@ -113,7 +102,7 @@ class DGP(object):
                                         betas=(self.config['G_B1'], self.config['G_B2']),
                                         weight_decay=0,
                                         eps=1e-8)
-        self.y = torch.zeros(z_size).long().cuda()
+        self.y = torch.zeros(1).long().cuda()
 
     def reset_G(self):
         self.G.load_state_dict(self.G_weight, strict=False)
@@ -156,7 +145,7 @@ class DGP(object):
                 if self.arch == 'biggan':
                     x = self.G(self.z, self.G.shared(self.y), use_in=self.use_in[stage])
                 elif self.arch == 'stylegan':
-                    x = self.G([self.z])
+                    x, _ = self.G([self.z])
                 # apply degradation transform
                 x_map = self.pre_process(x, False)
 
@@ -252,7 +241,7 @@ class DGP(object):
                        '%s/z_%s_%s.pth' % (self.config['exp_path'], self.img_name, self.mode))
         return loss_dict
 
-    def select_z(self, select_y=False, load_z_path=''):
+    def select_z(self, select_y=False, load_z_path=None):
         with torch.no_grad():
             if self.select_num == 0:
                 self.z.zero_()
@@ -261,46 +250,26 @@ class DGP(object):
                 self.z.normal_()
                 return
             z_all, y_all, loss_all = [], [], []
-            self.criterion.set_ftr_num(3)
             if self.rank == 0:
-                if load_z_path != '':
-                    print('loading initialized z from {}'.format(load_z_path))
-                else:
-                    print('Selecting z from {} samples'.format(self.select_num))
-
-            if load_z_path != '':
-                z_init = torch.load(load_z_path).cuda()
-                for z in z_init[:, None]:
-                    x = self.G(z, self.G.shared(self.y))
-                    x = self.pre_process(x)
-                    z_all.append(z.cpu())
-                    ftr_loss = self.criterion(self.ftr_net, x, self.target)
-                    loss_all.append(ftr_loss.view(1).cpu())
-            else:
-                for i in range(self.select_num):
-                    self.z.normal_(mean=0, std=self.config['sample_std'])
-                    z_all.append(self.z.cpu())
-                    if select_y:
-                        self.y.random_(0, self.config['n_classes'])
-                        y_all.append(self.y.cpu())
-                    if self.arch == 'biggan':
-                        x = self.G(self.z, self.G.shared(self.y))
-                    elif self.arch == 'stylegan':
-                        x = self.G(self.z)
-                    else:
-                        raise NotImplementedError
-                    x = self.pre_process(x)
-                    # import ipdb
-                    # ipdb.set_trace()
-                    ftr_loss = self.criterion(self.ftr_net, x, self.target)
-                    loss_all.append(ftr_loss.view(1).cpu())
-                    if self.rank == 0 and (i + 1) % 100 == 0:
-                        print('Generating {}th sample'.format(i + 1))
-
+                print('Selecting z from {} samples'.format(self.select_num))
+            # only use last 3 discriminator features to compare
+            self.criterion.set_ftr_num(3)
+            for i in range(self.select_num):
+                self.z.normal_(mean=0, std=self.config['sample_std'])
+                z_all.append(self.z.cpu())
+                if select_y:
+                    self.y.random_(0, self.config['n_classes'])
+                    y_all.append(self.y.cpu())
+                x = self.G(self.z)
+                x = self.pre_process(x)
+                ipdb.set_trace()
+                ftr_loss = self.criterion(self.ftr_net, x, self.target)
+                loss_all.append(ftr_loss.view(1).cpu())
+                if self.rank == 0 and (i + 1) % 100 == 0:
+                    print('Generating {}th sample'.format(i + 1))
             loss_all = torch.cat(loss_all)
             idx = torch.argmin(loss_all)
             self.z.copy_(z_all[idx])
-
             if select_y:
                 self.y.copy_(y_all[idx])
             self.criterion.set_ftr_num(self.ftr_num[0])

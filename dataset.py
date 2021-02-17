@@ -2,6 +2,9 @@ import torch.utils.data as data
 import torchvision.transforms as transforms
 from PIL import Image
 
+from pathlib import Path
+import glob
+
 import utils
 
 
@@ -32,12 +35,7 @@ def default_loader(path):
 
 class ImageDataset(data.Dataset):
 
-    def __init__(self,
-                 root_dir,
-                 meta_file,
-                 transform=None,
-                 image_size=128,
-                 normalize=True):
+    def __init__(self, root_dir, meta_file=None, transform=None, image_size=128, normalize=True):
         self.root_dir = root_dir
         if transform is not None:
             self.transform = transform
@@ -57,8 +55,12 @@ class ImageDataset(data.Dataset):
                     transforms.Resize(image_size),
                     transforms.ToTensor()
                 ])
-        with open(meta_file) as f:
-            lines = f.readlines()
+        if meta_file != None:
+            with open(meta_file) as f:
+                lines = f.readlines()
+        else:
+            lines = glob.glob(Path(root_dir) / '*.png')
+
         print("building dataset from %s" % meta_file)
         self.num = len(lines)
         self.metas = []
@@ -74,11 +76,14 @@ class ImageDataset(data.Dataset):
     def __len__(self):
         return self.num
 
-    def __getitem__(self, idx):
+    def read_file(self, idx):
         filename = self.root_dir + '/' + self.metas[idx][0]
         cls = self.metas[idx][1]
         img = default_loader(filename)
+        return filename, cls, img
 
+    def __getitem__(self, idx):
+        filename, cls, img = self.read_file(idx)
         # transform
         if self.transform is not None:
             img = self.transform(img)

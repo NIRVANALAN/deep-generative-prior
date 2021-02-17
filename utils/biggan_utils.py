@@ -25,193 +25,278 @@ def prepare_parser():
 
     ### Pipeline stuff ###
     parser.add_argument(
-        '--eval_mode', action='store_true', default=False,
+        '--eval_mode',
+        action='store_true',
+        default=False,
         help='Evaluation mode? (do not save logs) '
-                 ' (default: %(default)s)')
+        ' (default: %(default)s)')
 
     ### Model stuff ###
     parser.add_argument(
-        '--model', type=str, default='BigGAN',
+        '--model',
+        type=str,
+        default='BigGAN',
         help='Name of the model module (default: %(default)s)')
     parser.add_argument(
-        '--G_param', type=str, default='SN',
+        '--G_param',
+        type=str,
+        default='SN',
         help='Parameterization style to use for G, spectral norm (SN) or SVD (SVD)'
-             ' or None (default: %(default)s)')
+        ' or None (default: %(default)s)')
     parser.add_argument(
-        '--D_param', type=str, default='SN',
+        '--D_param',
+        type=str,
+        default='SN',
         help='Parameterization style to use for D, spectral norm (SN) or SVD (SVD)'
-             ' or None (default: %(default)s)')
+        ' or None (default: %(default)s)')
     parser.add_argument(
-        '--G_ch', type=int, default=64,
-        help='Channel multiplier for G (default: %(default)s)')
+        '--G_ch', type=int, default=64, help='Channel multiplier for G (default: %(default)s)')
     parser.add_argument(
-        '--D_ch', type=int, default=64,
-        help='Channel multiplier for D (default: %(default)s)')
+        '--D_ch', type=int, default=64, help='Channel multiplier for D (default: %(default)s)')
     parser.add_argument(
-        '--G_depth', type=int, default=1,
+        '--G_depth',
+        type=int,
+        default=1,
         help='Number of resblocks per stage in G? (default: %(default)s)')
     parser.add_argument(
-        '--D_depth', type=int, default=1,
+        '--D_depth',
+        type=int,
+        default=1,
         help='Number of resblocks per stage in D? (default: %(default)s)')
     parser.add_argument(
-        '--D_thin', action='store_false', dest='D_wide', default=True,
+        '--D_thin',
+        action='store_false',
+        dest='D_wide',
+        default=True,
         help='Use the SN-GAN channel pattern for D? (default: %(default)s)')
     parser.add_argument(
-        '--G_shared', action='store_true', default=False,
+        '--G_shared',
+        action='store_true',
+        default=False,
         help='Use shared embeddings in G? (default: %(default)s)')
     parser.add_argument(
-        '--shared_dim', type=int, default=0,
-        help='G''s shared embedding dimensionality; if 0, will be equal to dim_z. '
-             '(default: %(default)s)')
+        '--shared_dim',
+        type=int,
+        default=0,
+        help='G'
+        's shared embedding dimensionality; if 0, will be equal to dim_z. '
+        '(default: %(default)s)')
+    parser.add_argument('--dim_z', type=int, default=128, help='Noise dimensionality: %(default)s)')
     parser.add_argument(
-        '--dim_z', type=int, default=128,
-        help='Noise dimensionality: %(default)s)')
-    parser.add_argument(
-        '--hier', action='store_true', default=False,
+        '--hier',
+        action='store_true',
+        default=False,
         help='Use hierarchical z in G? (default: %(default)s)')
     parser.add_argument(
-        '--n_classes', type=int, default=1000,
-        help='Number of class conditions %(default)s)')
+        '--n_classes', type=int, default=1000, help='Number of class conditions %(default)s)')
     parser.add_argument(
-        '--cross_replica', action='store_true', default=False,
+        '--cross_replica',
+        action='store_true',
+        default=False,
         help='Cross_replica batchnorm in G?(default: %(default)s)')
     parser.add_argument(
-        '--mybn', action='store_true', default=False,
+        '--mybn',
+        action='store_true',
+        default=False,
         help='Use my batchnorm (which supports standing stats?) %(default)s)')
     parser.add_argument(
-        '--G_nl', type=str, default='inplace_relu',
+        '--G_nl',
+        type=str,
+        default='inplace_relu',
         help='Activation function for G (default: %(default)s)')
     parser.add_argument(
-        '--D_nl', type=str, default='inplace_relu',
+        '--D_nl',
+        type=str,
+        default='inplace_relu',
         help='Activation function for D (default: %(default)s)')
     parser.add_argument(
-        '--G_attn', type=str, default='64',
+        '--G_attn',
+        type=str,
+        default='64',
         help='What resolutions to use attention on for G (underscore separated) '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
     parser.add_argument(
-        '--D_attn', type=str, default='64',
+        '--D_attn',
+        type=str,
+        default='64',
         help='What resolutions to use attention on for D (underscore separated) '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
     parser.add_argument(
-        '--norm_style', type=str, default='bn',
+        '--norm_style',
+        type=str,
+        default='bn',
         help='Normalizer style for G, one of bn [batchnorm], in [instancenorm], '
-             'ln [layernorm], gn [groupnorm] (default: %(default)s)')
-                 
+        'ln [layernorm], gn [groupnorm] (default: %(default)s)')
+
     ### Model init stuff ###
     parser.add_argument(
-        '--seed', type=int, default=0,
+        '--seed',
+        type=int,
+        default=0,
         help='Random seed to use; affects both initialization and '
-             ' dataloading. (default: %(default)s)')
+        ' dataloading. (default: %(default)s)')
     parser.add_argument(
-        '--G_init', type=str, default='ortho',
+        '--G_init',
+        type=str,
+        default='ortho',
         help='Init style to use for G (default: %(default)s)')
     parser.add_argument(
-        '--D_init', type=str, default='ortho',
-        help='Init style to use for D(default: %(default)s)')
+        '--D_init', type=str, default='ortho', help='Init style to use for D(default: %(default)s)')
     parser.add_argument(
-        '--skip_init', action='store_true', default=False,
+        '--skip_init',
+        action='store_true',
+        default=False,
         help='Skip initialization, ideal for testing when ortho init was used '
-             '(default: %(default)s)')
-    
+        '(default: %(default)s)')
+
     ### Optimizer stuff ###
     parser.add_argument(
-        '--optimizer', type=str, default='Adam',
+        '--optimizer',
+        type=str,
+        default='Adam',
         help='Optimizer, Adam or SGD (default: %(default)s)')
     parser.add_argument(
-        '--G_lr', type=float, default=5e-5,
+        '--G_lr',
+        type=float,
+        default=5e-5,
         help='Learning rate to use for Generator (default: %(default)s)')
     parser.add_argument(
-        '--D_lr', type=float, default=2e-4,
+        '--D_lr',
+        type=float,
+        default=2e-4,
         help='Learning rate to use for Discriminator (default: %(default)s)')
     parser.add_argument(
-        '--Z_lr_mult', type=float, default=50,
+        '--Z_lr_mult',
+        type=float,
+        default=50,
         help='Learning rate multiplication to use for Z (default: %(default)s)')
     parser.add_argument(
-        '--G_B1', type=float, default=0.0,
-        help='Beta1 to use for Generator (default: %(default)s)')
+        '--G_B1', type=float, default=0.0, help='Beta1 to use for Generator (default: %(default)s)')
     parser.add_argument(
-        '--D_B1', type=float, default=0.0,
+        '--D_B1',
+        type=float,
+        default=0.0,
         help='Beta1 to use for Discriminator (default: %(default)s)')
     parser.add_argument(
-        '--G_B2', type=float, default=0.999,
+        '--G_B2',
+        type=float,
+        default=0.999,
         help='Beta2 to use for Generator (default: %(default)s)')
     parser.add_argument(
-        '--D_B2', type=float, default=0.999,
+        '--D_B2',
+        type=float,
+        default=0.999,
         help='Beta2 to use for Discriminator (default: %(default)s)')
-        
+
     ### Batch size, parallel, and precision stuff ###
     parser.add_argument(
-        '--G_fp16', action='store_true', default=False,
+        '--G_fp16',
+        action='store_true',
+        default=False,
         help='Train with half-precision in G? (default: %(default)s)')
     parser.add_argument(
-        '--D_fp16', action='store_true', default=False,
+        '--D_fp16',
+        action='store_true',
+        default=False,
         help='Train with half-precision in D? (default: %(default)s)')
     parser.add_argument(
-        '--D_mixed_precision', action='store_true', default=False,
+        '--D_mixed_precision',
+        action='store_true',
+        default=False,
         help='Train with half-precision activations but fp32 params in D? '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
     parser.add_argument(
-        '--G_mixed_precision', action='store_true', default=False,
+        '--G_mixed_precision',
+        action='store_true',
+        default=False,
         help='Train with half-precision activations but fp32 params in G? '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
     parser.add_argument(
-        '--accumulate_stats', action='store_true', default=False,
+        '--accumulate_stats',
+        action='store_true',
+        default=False,
         help='Accumulate "standing" batchnorm stats? (default: %(default)s)')
     parser.add_argument(
-        '--num_standing_accumulations', type=int, default=16,
+        '--num_standing_accumulations',
+        type=int,
+        default=16,
         help='Number of forward passes to use in accumulating standing stats? '
-             '(default: %(default)s)')        
-        
-    ### Bookkeping stuff ###  
+        '(default: %(default)s)')
+
+    ### Bookkeping stuff ###
     parser.add_argument(
-        '--weights_root', type=str, default='weights',
+        '--weights_root',
+        type=str,
+        default='pretrained',
         help='Default location to store weights (default: %(default)s)')
-                 
+
     ### EMA Stuff ###
     parser.add_argument(
-        '--use_ema', action='store_true', default=False,
+        '--use_ema',
+        action='store_true',
+        default=False,
         help='Use the EMA parameters of G for evaluation? (default: %(default)s)')
-    
-    ### Numerical precision and SV stuff ### 
+
+    ### Numerical precision and SV stuff ###
     parser.add_argument(
-        '--adam_eps', type=float, default=1e-6,
+        '--adam_eps',
+        type=float,
+        default=1e-6,
         help='epsilon value to use for Adam (default: %(default)s)')
     parser.add_argument(
-        '--BN_eps', type=float, default=1e-5,
+        '--BN_eps',
+        type=float,
+        default=1e-5,
         help='epsilon value to use for BatchNorm (default: %(default)s)')
     parser.add_argument(
-        '--SN_eps', type=float, default=1e-6,
+        '--SN_eps',
+        type=float,
+        default=1e-6,
         help='epsilon value to use for Spectral Norm(default: %(default)s)')
     parser.add_argument(
-        '--num_G_SVs', type=int, default=1,
+        '--num_G_SVs',
+        type=int,
+        default=1,
         help='Number of SVs to track in G (default: %(default)s)')
     parser.add_argument(
-        '--num_D_SVs', type=int, default=1,
+        '--num_D_SVs',
+        type=int,
+        default=1,
         help='Number of SVs to track in D (default: %(default)s)')
     parser.add_argument(
-        '--num_G_SV_itrs', type=int, default=1,
+        '--num_G_SV_itrs',
+        type=int,
+        default=1,
         help='Number of SV itrs in G (default: %(default)s)')
     parser.add_argument(
-        '--num_D_SV_itrs', type=int, default=1,
+        '--num_D_SV_itrs',
+        type=int,
+        default=1,
         help='Number of SV itrs in D (default: %(default)s)')
-    
+
     ### Resume training stuff
     parser.add_argument(
-        '--load_weights', type=str, default='',
+        '--load_weights',
+        type=str,
+        default='',
         help='Suffix for which weights to load (e.g. best0, copy0) '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
 
     ### Log stuff ###
     parser.add_argument(
-        '--no_tb', action='store_true', default=False,
+        '--no_tb',
+        action='store_true',
+        default=False,
         help='Do not use tensorboard? '
-             '(default: %(default)s)')
+        '(default: %(default)s)')
     return parser
 
 
-activation_dict = {'inplace_relu': nn.ReLU(inplace=True),
-                   'relu': nn.ReLU(inplace=False),
-                   'ir': nn.ReLU(inplace=True)}
+activation_dict = {
+    'inplace_relu': nn.ReLU(inplace=True),
+    'relu': nn.ReLU(inplace=False),
+    'ir': nn.ReLU(inplace=True)
+}
 
 
 def dgp_update_config(config):
@@ -257,10 +342,8 @@ class RandomCropLongEdge(object):
         """
         size = (min(img.size), min(img.size))
         # Only step forward along this edge if it's the long edge
-        i = (0 if size[0] == img.size[0] else np.random.randint(
-            low=0, high=img.size[0] - size[0]))
-        j = (0 if size[1] == img.size[1] else np.random.randint(
-            low=0, high=img.size[1] - size[1]))
+        i = (0 if size[0] == img.size[0] else np.random.randint(low=0, high=img.size[0] - size[0]))
+        j = (0 if size[1] == img.size[1] else np.random.randint(low=0, high=img.size[1] - size[1]))
         return transforms.functional.crop(img, i, j, size[0], size[1])
 
     def __repr__(self):
@@ -287,9 +370,8 @@ def ortho(model, strength=1e-4, blacklist=[], invconvonly=False):
             if len(param.shape) < 2 or any([param is item for item in blacklist]):
                 continue
             w = param.view(param.shape[0], -1)
-            grad = (2 * torch.mm(
-                torch.mm(w, w.t()) *
-                (1. - torch.eye(w.shape[0], device=w.device)), w))
+            grad = (2 *
+                    torch.mm(torch.mm(w, w.t()) * (1. - torch.eye(w.shape[0], device=w.device)), w))
             param.grad.data += strength * grad.view(param.shape)
 
 
@@ -303,9 +385,7 @@ def default_ortho(model, strength=1e-4, blacklist=[]):
             if len(param.shape) < 2 or param in blacklist:
                 continue
             w = param.view(param.shape[0], -1)
-            grad = (2 * torch.mm(
-                torch.mm(w, w.t()) - torch.eye(w.shape[0], device=w.device),
-                w))
+            grad = (2 * torch.mm(torch.mm(w, w.t()) - torch.eye(w.shape[0], device=w.device), w))
             param.grad.data += strength * grad.view(param.shape)
 
 
@@ -323,12 +403,8 @@ def join_strings(base_string, strings):
 
 
 # Load a model's weights
-def load_weights(G,
-                 D,
-                 weights_root,
-                 name_suffix=None,
-                 G_ema=None,
-                 strict=False):
+def load_weights(G, D, weights_root, name_suffix=None, G_ema=None, strict=False):
+
     def map_func(storage, location):
         return storage.cuda()
 
@@ -339,23 +415,20 @@ def load_weights(G,
     if G is not None:
         G.load_state_dict(
             torch.load(
-                '%s/%s.pth' %
-                (weights_root, join_strings('_', ['G', name_suffix])),
+                '%s/%s.pth' % (weights_root, join_strings('_', ['G', name_suffix])),
                 map_location=map_func),
             strict=strict)
     if D is not None:
         D.load_state_dict(
             torch.load(
-                '%s/%s.pth' %
-                (weights_root, join_strings('_', ['D', name_suffix])),
+                '%s/%s.pth' % (weights_root, join_strings('_', ['D', name_suffix])),
                 map_location=map_func),
             strict=strict)
     if G_ema is not None:
         print('Loading ema generator...')
         G_ema.load_state_dict(
             torch.load(
-                '%s/%s.pth' %
-                (weights_root, join_strings('_', ['G_ema', name_suffix])),
+                '%s/%s.pth' % (weights_root, join_strings('_', ['G_ema', name_suffix])),
                 map_location=map_func),
             strict=strict)
 
@@ -423,8 +496,7 @@ def query_gpu(indices):
 
 # Convenience function to count the number of parameters in a module
 def count_parameters(module):
-    print('Number of parameters: {}'.format(
-        sum([p.data.nelement() for p in module.parameters()])))
+    print('Number of parameters: {}'.format(sum([p.data.nelement() for p in module.parameters()])))
 
 
 # Convenience function to sample an index, not actually a 1-hot
@@ -475,12 +547,7 @@ class Distribution(torch.Tensor):
 
 
 # Convenience function to prepare a z and y vector
-def prepare_z_y(G_batch_size,
-                dim_z,
-                nclasses,
-                device='cuda',
-                fp16=False,
-                z_var=1.0):
+def prepare_z_y(G_batch_size, dim_z, nclasses, device='cuda', fp16=False, z_var=1.0):
     z_ = Distribution(torch.randn(G_batch_size, dim_z, requires_grad=False))
     z_.init_distribution('normal', mean=0, var=z_var)
     z_ = z_.to(device, torch.float16 if fp16 else torch.float32)
@@ -523,12 +590,7 @@ def accumulate_standing_stats(net, z, y, nclasses, num_accumulations=16):
 
 class Adam16(Optimizer):
 
-    def __init__(self,
-                 params,
-                 lr=1e-3,
-                 betas=(0.9, 0.999),
-                 eps=1e-8,
-                 weight_decay=0):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
         params = list(params)
         super(Adam16, self).__init__(params, defaults)
@@ -539,8 +601,7 @@ class Adam16(Optimizer):
         for group in self.param_groups:
             for p in group['params']:
                 self.state[p]['exp_avg'] = self.state[p]['exp_avg'].float()
-                self.state[p]['exp_avg_sq'] = self.state[p][
-                    'exp_avg_sq'].float()
+                self.state[p]['exp_avg_sq'] = self.state[p]['exp_avg_sq'].float()
                 self.state[p]['fp32_p'] = self.state[p]['fp32_p'].float()
 
     def step(self, closure=None):
@@ -587,8 +648,7 @@ class Adam16(Optimizer):
 
                 bias_correction1 = 1 - beta1**state['step']
                 bias_correction2 = 1 - beta2**state['step']
-                step_size = group['lr'] * math.sqrt(
-                    bias_correction2) / bias_correction1
+                step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
 
                 state['fp32_p'].addcdiv_(-step_size, exp_avg, denom)
                 p.data = state['fp32_p'].half()

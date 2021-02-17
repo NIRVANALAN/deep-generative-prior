@@ -8,3 +8,7 @@ logs*
 event*
 *.npy
 *.pth
+.ipynb_checkpoints
+*.pt
+data
+experiments
