@@ -1,11 +1,14 @@
 import os
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import torch.nn as nn
 import torchvision
+from torchvision.utils import save_image
 from PIL import Image
 from skimage import color
 from skimage.measure import compare_psnr, compare_ssim
@@ -14,6 +17,7 @@ from torch.autograd import Variable
 import models
 import utils
 from models.downsampler import Downsampler
+import ipdb
 
 
 class DGP(object):
@@ -34,15 +38,17 @@ class DGP(object):
         self.G_lrs = config['G_lrs']
         self.z_lrs = config['z_lrs']
         self.use_in = config['use_in']
+        self.use_D = config['use_D']
         self.select_num = config['select_num']
         self.factor = 2 if self.mode == 'hybrid' else 4  # Downsample factor
         self.arch = config['arch']
+        self.verbose = config['verbose']
 
         # create model
-        Generator, Discriminator = models.get_model(self.arch)
+        generator, discriminator = models.get_model(self.arch)
 
-        self.G = Generator(**config).cuda()
-        self.D = Discriminator(**config).cuda() if config['ftr_type'] == 'Discriminator' else None
+        self.G = generator(**config).cuda()
+        self.D = discriminator(**config).cuda() if config['ftr_type'] == 'Discriminator' else None
 
         model_size = len(self.G.blocks) + 1 if self.arch == 'biggan' else self.G.log_size
         self.G.optim = torch.optim.Adam([{
@@ -71,6 +77,24 @@ class DGP(object):
                 # if config['use_ema']:
                 self.G.load_state_dict(ckpt_g["params_ema"])
                 self.D.load_state_dict(ckpt_d["params"])
+
+                # calculate statistics of mapping network
+                mapping = self.G.style_mlp
+                self.lrelu = torch.nn.LeakyReLU(negative_slope=0.2)
+                gaussian_fit_path = 'gaussian_fit_lsun.pt'
+
+                # if Path(gaussian_fit_path).exists():
+                #     self.gaussian_fit = torch.load(gaussian_fit_path)
+                # else:
+                #     if self.verbose: print("\tRunning Mapping Network")
+                #     # initialize w+ space with mapping network mean and std ! This only applies to face according to Image2stylegan
+                #     with torch.no_grad():
+                #         torch.manual_seed(0)
+                #         latent = torch.randn((1000000, 512), dtype=torch.float32, device="cuda")
+                #         latent_out = torch.nn.LeakyReLU(5)(mapping(latent))
+                #         self.gaussian_fit = {"mean": latent_out.mean(0), "std": latent_out.std(0)}
+                #         torch.save(self.gaussian_fit, gaussian_fit_path)
+                #         if self.verbose: print("\tSaved {}".format(gaussian_fit_path))
             else:
                 raise NotImplementedError
 
@@ -80,7 +104,7 @@ class DGP(object):
         self.G_weight = deepcopy(self.G.state_dict())
 
         # prepare latent variable and optimizer
-        self._prepare_latent(config['z_size'])
+        self._prepare_latent(config)
         # prepare learning rate scheduler
         self.G_scheduler = utils.LRScheduler(self.G.optim, config['warm_up'])
         self.z_scheduler = utils.LRScheduler(self.z_optim, config['warm_up'])
@@ -100,20 +124,81 @@ class DGP(object):
             n_planes=3, factor=self.factor, kernel_type='lanczos2', phase=0.5,
             preserve_size=True).type(torch.cuda.FloatTensor)
 
-    def _prepare_latent(
-        self,
-        z_size=1,
-    ):
-        self.z = torch.zeros((z_size, self.G.dim_z)).normal_().cuda()  # * normal
-        self.z = Variable(self.z, requires_grad=True)
+    def init_hidden(self):
+        # for init z after each iteration, pose_aware_net onuy
+        self.z = self.z_cache
+
+    def _prepare_latent(self, config):
+
+        # add pose_aware condition network
+        params = None
+        if config['pose_aware']:
+            self.pose_aware_net = PoseAwareNet_1(config).cuda()
+            # same z for the same identity
+            self.z = torch.zeros((1, self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
+            self.z = self.z.repeat(config['z_size'], 1)
+            self.z_cache = self.z  # backup
+            # self.z.requires_grad = False  # fix z for the same identity
+            params = self.pose_aware_net.parameters()
+        else:
+            self.pose_aware_net = False
+            self.z = torch.zeros(
+                (config['z_size'], self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
+            self.z = Variable(self.z, requires_grad=True)
+            params = self.z
+
+        # TODO lint
+        if self.arch == 'stylegan':
+            # w+ space for stylegan2. BS * 16 * 512
+            self.z = torch.zeros(
+                (config['z_size'], self.G.num_latent, 512),
+                dtype=torch.float,
+                device='cuda',
+                #  requires_grad=True,
+            )
+            self.z.uniform_(-1, 1)  # follows image2stylegan init for non-face classes
+            params = self.z
+
+            # Generate list of noise tensors
+            noise = []  # stores all of the noise tensors
+            noise_vars = []  # stores the noise tensors that we want to optimize on
+            for i in range(1, self.G.num_latent):
+                # dimension of the ith noise tensor
+                res = (config['z_size'], 1, 2**(i // 2 + 2), 2**(i // 2 + 2))
+
+                if (config['noise_type'] == 'zero'
+                        or i in [int(layer) for layer in config['bad_noise_layers'].split('.')]):
+                    new_noise = torch.zeros(res, dtype=torch.float, device='cuda')
+                    new_noise.requires_grad = False
+                elif (config['noise_type'] == 'fixed'):
+                    new_noise = torch.randn(res, dtype=torch.float, device='cuda')
+                    new_noise.requires_grad = False
+                elif (config['noise_type'] == 'trainable'):
+
+                    new_noise = torch.randn(res, dtype=torch.float, device='cuda')
+                    if (i < config['num_trainable_noise_layers']):
+                        new_noise.requires_grad = True
+                        noise_vars.append(new_noise)
+                    else:
+                        new_noise.requires_grad = False
+                else:
+                    raise Exception("unknown noise type")
+
+                noise.append(new_noise)
+
+            var_list = [self.z] + noise_vars
+
+            # TODO
+            # self.z_optim = SphericalOptimizer(opt_func, var_list, lr=learning_rate)
+        self.z.requires_grad = True
         self.z_optim = torch.optim.Adam([{
-            'params': self.z,
+            'params': params,
             'lr': self.z_lrs[0]
         }],
                                         betas=(self.config['G_B1'], self.config['G_B2']),
                                         weight_decay=0,
                                         eps=1e-8)
-        self.y = torch.zeros(z_size).long().cuda()
+        self.y = torch.zeros(config['z_size']).long().cuda()
 
     def reset_G(self):
         self.G.load_state_dict(self.G_weight, strict=False)
@@ -126,19 +211,23 @@ class DGP(object):
     def random_G(self):
         self.G.init_weights()
 
-    def set_target(self, target, category, img_path):
+    def set_target(self, target, category, img_path, pose=None):
         self.target_origin = target
         # apply degradation transform to the original image
+        self.pose = pose.cuda()
         self.target = self.pre_process(target, True)
         self.y.fill_(category.item())
         self.img_name = img_path[img_path.rfind('/') + 1:img_path.rfind('.')]
 
-    def run(self, save_interval=None):
+    def run(self, save_interval=None, meta_data=None):
         save_imgs = self.target.clone()
         save_imgs2 = save_imgs.cpu().clone()
         loss_dict = {}
         curr_step = 0
         count = 0
+        ##
+
+        ##
         for stage, iteration in enumerate(self.iterations):
             # setup the number of features to use in discriminator
             self.criterion.set_ftr_num(self.ftr_num[stage])
@@ -153,29 +242,39 @@ class DGP(object):
                 self.z_optim.zero_grad()
                 if self.update_G:
                     self.G.optim.zero_grad()
+
+                if self.pose_aware_net:
+                    # detach self.z from history
+                    self.init_hidden()
+                    self.z = self.pose_aware_net(self.z, self.pose)
+                # else:
+                #     z = self.z
+
                 if self.arch == 'biggan':
                     x = self.G(self.z, self.G.shared(self.y), use_in=self.use_in[stage])
                 elif self.arch == 'stylegan':
-                    x = self.G([self.z])
+                    x = self.G(self.z, input_is_latent=True, randomize_noise=True)
                 # apply degradation transform
                 x_map = self.pre_process(x, False)
 
                 # calculate losses in the degradation space
-                ftr_loss = self.criterion(self.ftr_net, x_map, self.target)
+                # avoid OOM
+                ftr_loss = 0
+                # for idx in range(len(x_map)):
+                #     import ipdb
+                #     ipdb.set_trace()
+                ftr_loss += self.criterion(self.ftr_net, x_map, self.target)
+
                 mse_loss = self.mse(x_map, self.target)
                 # nll corresponds to a negative log-likelihood loss # TODO
                 nll = self.z**2 / 2
+
                 nll = nll.mean()
                 l1_loss = F.l1_loss(x_map, self.target)
+
                 loss = ftr_loss * self.config['w_D_loss'][stage] + \
-                    mse_loss * self.config['w_mse'][stage] + \
-                    nll * self.config['w_nll']
-                loss.backward()
-
-                self.z_optim.step()
-                if self.update_G:
-                    self.G.optim.step()
-
+                       mse_loss * self.config['w_mse'][stage] + \
+                       nll * self.config['w_nll']
                 # These losses are calculated in the [-1,1] image scale
                 # We record the rescaled MSE and L1 loss, corresponding to [0,1] image scale
                 loss_dict = {
@@ -184,6 +283,23 @@ class DGP(object):
                     'mse_loss': mse_loss / 4,
                     'l1_loss': l1_loss / 2
                 }
+
+                # discriminator loss
+                if self.use_D:
+                    dist_fake = self.D(x_map, self.y)[0].squeeze()
+                    d_loss = loss_hinge_gen(dist_fake)  # negative
+                    import ipdb
+                    ipdb.set_trace()
+                    d_loss *= self.config['w_Disc_loss']
+                    loss += d_loss
+                    loss_dict.update({'Disc_loss': d_loss})
+
+                loss.backward()
+
+                self.z_optim.step()
+
+                if self.update_G:
+                    self.G.optim.step()
 
                 # calculate losses in the non-degradation space
                 if self.mode in ['reconstruct', 'colorization', 'SR', 'inpainting']:
@@ -269,6 +385,7 @@ class DGP(object):
                     print('Selecting z from {} samples'.format(self.select_num))
 
             if load_z_path != '':
+                # todo
                 z_init = torch.load(load_z_path).cuda()
                 for z in z_init[:, None]:
                     x = self.G(z, self.G.shared(self.y))
@@ -279,6 +396,8 @@ class DGP(object):
             else:
                 for i in range(self.select_num):
                     self.z.normal_(mean=0, std=self.config['sample_std'])
+                    #                    if self.pose_aware_net:
+                    #                        self.z = self.pose_aware_net(self.z, self.meta_data['pose'])
                     z_all.append(self.z.cpu())
                     if select_y:
                         self.y.random_(0, self.config['n_classes'])
@@ -286,12 +405,10 @@ class DGP(object):
                     if self.arch == 'biggan':
                         x = self.G(self.z, self.G.shared(self.y))
                     elif self.arch == 'stylegan':
-                        x = self.G(self.z)
+                        x = self.G(self.z, input_is_latent=True, randomize_noise=True)
                     else:
                         raise NotImplementedError
                     x = self.pre_process(x)
-                    # import ipdb
-                    # ipdb.set_trace()
                     ftr_loss = self.criterion(self.ftr_net, x, self.target)
                     loss_all.append(ftr_loss.view(1).cpu())
                     if self.rank == 0 and (i + 1) % 100 == 0:
@@ -379,7 +496,10 @@ class DGP(object):
                     # add random noise to the latent vector
                     z_rand.normal_()
                     z = self.z + std * z_rand
-                    x_jitter = self.G(z, self.G.shared(self.y))
+                    if self.arch == 'biggan':
+                        x_jitter = self.G(z, self.G.shared(self.y))
+                    elif self.arch == 'stylegan':
+                        x_jitter = self.G([self.z])
                     utils.save_img(x_jitter[0], '%s/std%.1f_%d.jpg' % (save_path, std, i))
                     save_imgs = torch.cat((save_imgs, x_jitter.cpu()), dim=0)
 
@@ -388,3 +508,76 @@ class DGP(object):
             '%s/images_sheet/%s_jitters.jpg' % (self.config['exp_path'], self.img_name),
             nrow=int(save_imgs.size(0)**0.5),
             normalize=True)
+
+
+class PoseAwareNet_1(nn.Module):
+
+    def __init__(self, config, dim_z=119):
+        # self.pose = config['pose']
+        super(PoseAwareNet_1, self).__init__()
+        # E_Linear in stylegan?
+        self.network = nn.Sequential(
+            nn.Linear(dim_z + config['pose_dim'], dim_z),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Linear(dim_z, dim_z),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Linear(dim_z, dim_z),
+            nn.LeakyReLU(negative_slope=0.2),
+        )
+
+    def forward(self, z, pose):
+        assert z.shape[0] == pose.shape[0]
+        z = torch.cat([z, pose], dim=1)
+        z = self.network(z)
+        return z
+
+
+class PoseAwareNet_2(nn.Module):
+
+    def __init__(self, config, dim_z=119):
+        # self.pose = config['pose']
+        super(PoseAwareNet_2, self).__init__()
+        # E_Linear in stylegan?
+        self.pose_upsample_net = [
+            nn.Linear(config['pose_dim'], config['pose_upsample_dim']),
+            nn.LeakyReLU(negative_slope=0.2)
+        ]
+        # follows Tachachento's paper
+        for i in range(config['pose_upsample_layer'] - 1):
+            self.pose_upsample_net += nn.Sequential(  # follows Tachachento's paper
+                nn.Linear(config['pose_upsample_dim'], config['pose_upsample_dim']),
+                nn.LeakyReLU(negative_slope=0.2))
+        self.pose_upsample_net = nn.Sequential(*self.pose_upsample_net)
+
+        self.fusion_net = nn.Sequential(
+            nn.Linear(dim_z + config['pose_upsample_dim'], dim_z),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Linear(dim_z, dim_z),
+            nn.LeakyReLU(negative_slope=0.2),
+            # nn.Linear(config['dim_z'], config['dim_z']),
+            # nn.LeakyReLU(negative_slope=0.2),
+        )
+
+    def forward(self, z, pose):
+
+        assert z.shape[0] == pose.shape[0]
+        pose = self.pose_upsample_net(pose)
+        z = torch.cat([z, pose], dim=1)
+        z = self.fusion_net(z)
+        return z
+
+
+# hinge loss used in BigGAN
+def loss_hinge_dis(dis_flag, dis_score):
+    # dis_fake, dis_real):
+    assert dis_flag in ['real', 'fake']
+    if dis_flag == 'real':
+        return torch.mean(F.relu(1. - dis_score))
+    elif dis_flag == 'fake':
+        return torch.mean(F.relu(1. + dis_score))
+
+
+# hinge loss for Generator
+def loss_hinge_gen(dis_fake):
+    loss = -torch.mean(dis_fake)
+    return loss

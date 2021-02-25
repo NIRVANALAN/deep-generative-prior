@@ -14,6 +14,16 @@ from .biggan_utils import CenterCropLongEdge
 # Arguments for DGP
 def add_dgp_parser(parser):
     parser.add_argument(
+        '--z_size',
+        type=int,
+        default=1,
+        help='dimention of z to be optimzied in a batch (default: %(default)s)')
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        default=False,
+        help='print verbose (default: %(default)s)')
+    parser.add_argument(
         '--dist',
         action='store_true',
         default=False,
@@ -110,6 +120,12 @@ def add_dgp_parser(parser):
         nargs='+',
         help='MSE loss weight (default: %(default)s)')
     parser.add_argument(
+        '--w_Disc_loss',
+        type=float,
+        default=0.1,
+        # nargs='+',
+        help='Discriminator loss weight (default: %(default)s)')
+    parser.add_argument(
         '--select_num',
         type=int,
         default=1000,
@@ -155,44 +171,43 @@ def add_dgp_parser(parser):
         type=float,
         default=0.0,
         help='Feature loss threshold for stopping training (default: %(default)s)')
+    parser.add_argument(
+        '-extra_root_dir',
+        type=str,
+        default='/mnt/lustre/yslan/Repo/NVS/Projects/volume_rendering/srn_dataset',
+        help='dir for extra dataset like SRN')
     parser.add_argument('--arch', type=str, default='biggan', help='biggan or stylegan')
-
+    # whether to use discriminator
+    parser.add_argument(
+        '--use_D',
+        action='store_true',
+        default=False,
+        help='Whether to use discriminator in DGP (default: %(default)s)')
+    # disentangle pose with pose_aware subnet
+    parser.add_argument(
+        '--pose_aware', action='store_true', default=False, help='whether to condition z on pose')
+    parser.add_argument(
+        '--pose_aware_net_condition',
+        type=str,
+        default='concat',
+        help='how to add condition of pose')
+    parser.add_argument(
+        '--pose_upsample_dim', type=int, default=64, help='upsample dimension of input pose')
+    parser.add_argument('--pose_upsample_layer', type=int, default=3, help='upsample layers')
+    parser.add_argument(
+        '--pose_aware_net_layer',
+        type=int,
+        default=3,
+        help='layers of pose-aware condition network')
+    parser.add_argument(
+        '--pose_aware_net_dim', type=int, default=128, help='dims of pose-aware condition network')
+    parser.add_argument(
+        '--pose_dim', type=int, default=7, help='dimension of pose condition, 3+4 for quaternion')
     return parser
 
 
-def add_stylegan_parser(parser):
-    parser.add_argument("--size", type=int, default=128, help="image sizes for the model")
-    parser.add_argument(
-        "--ckpt_g",
-        type=str,
-        default=None,
-        help="path to the checkpoints to resume training",
-    )
-    parser.add_argument(
-        "--ckpt_d",
-        type=str,
-        default=None,
-        help="path to the checkpoints to resume training",
-    )
-    parser.add_argument(
-        "--ckpt",
-        type=str,
-        default=None,
-        help="path to the checkpoints to resume training",
-    )
-    parser.add_argument(
-        "--n_sample",
-        type=int,
-        default=64,
-        help="number of the samples generated during training",
-    )
-    parser.add_argument(
-        "--channel_multiplier",
-        type=int,
-        default=2,
-        help="channel multiplier factor for the model. config-f = 2, else = 1",
-    )
-
+# Arguments for demo
+def add_example_parser(parser):
     parser.add_argument('--save_weights_dir', type=str, default='', help='')
     parser.add_argument(
         '--mode', type=str, default='ft', help='ft or inference (default: %(default)s)')
@@ -217,6 +232,56 @@ def add_stylegan_parser(parser):
         help='class index of the 2nd image, used in "morphing" mode (default: %(default)s)')
     parser.add_argument(
         '--reset_G', action='store_true', default=False, help='reset G after each epoch')
+
+    return parser
+
+
+def add_stylegan_parser(parser):
+    parser.add_argument("--size", type=int, default=128, help="image sizes for the model")
+    parser.add_argument('--noise_type', type=str, default='fixed', help='zero, fixed, or trainable')
+    parser.add_argument(
+        '--bad_noise_layers',
+        type=str,
+        default="17",
+        help='List of noise layers to zero out to improve image quality')
+    parser.add_argument(
+        '--num_trainable_noise_layers',
+        type=int,
+        default=5,
+        help='Number of noise layers to optimize')
+    parser.add_argument(
+        "--ckpt_g",
+        type=str,
+        default=None,
+        help="path to the checkpoints to resume training",
+    )
+    parser.add_argument(
+        "--ckpt_d",
+        type=str,
+        default=None,
+        help="path to the checkpoints to resume training",
+    )
+    parser.add_argument(
+        "--ckpt",
+        type=str,
+        default=None,
+        help="path to the checkpoints to resume training",
+    )
+    parser.add_argument(
+        "--n_sample",
+        type=int,
+        default=1,
+        help="number of the samples generated during training",
+    )
+    parser.add_argument(
+        "--channel_multiplier",
+        type=int,
+        default=2,
+        help="channel multiplier factor for the model. config-f = 2, else = 1",
+    )
+
+    parser.add_argument(
+        '-noise_type', type=str, default='trainable', help='zero, fixed, or trainable')
     return parser
 
 

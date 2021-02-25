@@ -6,6 +6,12 @@ from pathlib import Path
 import glob
 
 import utils
+import torch
+import numpy as np
+from pathlib import Path
+import ipdb
+
+import quaternion
 
 
 def pil_loader(path):
@@ -55,7 +61,7 @@ class ImageDataset(data.Dataset):
                     transforms.Resize(image_size),
                     transforms.ToTensor()
                 ])
-        if meta_file != None:
+        if meta_file is not None:
             with open(meta_file) as f:
                 lines = f.readlines()
         else:
@@ -89,3 +95,40 @@ class ImageDataset(data.Dataset):
             img = self.transform(img)
 
         return img, cls, self.metas[idx][0]
+
+
+class ImagePoseDataset(ImageDataset):
+
+    def __init__(self,
+                 root_dir,
+                 meta_file=None,
+                 transform=None,
+                 image_size=128,
+                 normalize=True,
+                 pose_format='quaternion'):
+        super().__init__(root_dir, meta_file, transform, image_size, normalize)
+        assert pose_format in ['quaternion', 'euler']
+        self.pose_format = pose_format
+
+    def read_pose(self, idx):
+        pose_path = Path(self.root_dir).parent / 'pose' / '{:06}.txt'.format(
+            int(self.metas[idx][0].split('.')[0]))
+        pose = torch.from_numpy(np.loadtxt(pose_path, dtype=np.float32).reshape(4, 4))[:3, :]
+        rotation_mat = pose[:3, :3]
+        camera_pos = pose[:3, 3].view(-1)
+
+        if self.pose_format == 'quaternion':
+            pose = torch.from_numpy(
+                quaternion.as_float_array(quaternion.from_rotation_matrix(rotation_mat)))
+        else:
+            # TODO
+            pass
+        viewpoint = torch.cat([camera_pos, pose]).float()
+
+        return viewpoint
+
+    def __getitem__(self, idx):
+        img, cls, img_path = super().__getitem__(idx=idx)
+        meta_data = {'image': img, 'img_path': img_path, 'cls': cls, 'pose': self.read_pose(idx)}
+
+        return meta_data

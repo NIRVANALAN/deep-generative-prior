@@ -1,5 +1,6 @@
 import math
 import random
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -564,9 +565,11 @@ class Generator(nn.Module):
             return_latents (bool): Whether to return style latents.
                 Default: False.
         """
-        if not isinstance(styles, list):
-            styles = [styles]
+        if not isinstance(styles, (list, tuple)):
+            styles = [styles]  # interesting. tuple -> iterator
+
         # style codes -> latents with Style MLP layer
+
         if not input_is_latent:
             styles = [self.style_mlp(s) for s in styles]
         # noises
@@ -583,21 +586,32 @@ class Generator(nn.Module):
                                         (style - truncation_latent))
             styles = style_truncation
         # get style latent with injection
+
+        # direct inject latent code
         if len(styles) < 2:
             inject_index = self.num_latent
-
-            if styles[0].ndim < 3:
-                # repeat latent code for all the layers
+            if isinstance(styles[0], torch.Tensor) and styles[0].ndim < 3:
+                # repeated latent code for all the layers
                 latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
             else:
+                # BS * 16 * 512
                 latent = styles[0]
+        # inject latent code for each layer seperately
         elif len(styles) == self.num_latent:
             latent = torch.stack(styles, dim=1)
+
+        # crossover
         else:
             if inject_index is None:
                 inject_index = random.randint(1, self.num_latent - 1)
-            latent1 = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
-            latent2 = styles[1].unsqueeze(1).repeat(1, self.num_latent - inject_index, 1)
+            if styles[0].dim() == 2:  # BS * dim
+                latent1 = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
+                latent2 = styles[1].unsqueeze(1).repeat(1, self.num_latent - inject_index, 1)
+
+            else:  # BS * 18 * dim
+                latent1 = styles[0][..., :inject_index, :]
+                latent2 = styles[1][..., inject_index:, :]
+
             latent = torch.cat([latent1, latent2], 1)
 
         # main generation
