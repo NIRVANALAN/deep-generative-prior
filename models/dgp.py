@@ -60,44 +60,44 @@ class DGP(object):
                                         eps=1e-8)
 
         # load weights
-        if config['random_G']:
-            self.random_G()
-        else:
-            if config['pose_aware']:
-                self.pose_aware_net = PoseAwareNet_1(config).cuda()
-                if config['dgp_mode'] != 'ft':
-                    # load pose net
-                    ckpt_pose_path = '{}/pose_aware_net.pth'.format(config['weights_root'])
-                    print('loading pretrained pose_aware_net from {}'.format(ckpt_pose_path))
-                    self.pose_aware_net.load_state_dict(
-                        torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
+        if config['pose_aware']:
+            self.pose_aware_net = {
+                'biggan': PoseAwareNet_ZSpace,
+                'stylegan': PoseAwareNet_WSpace,
+            }[self.arch](config).cuda()
 
-                    # self.pose_aware_net.load_state_dict(
-                    #     torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
+            if config['dgp_mode'] != 'ft':
+                # load pose net
+                ckpt_pose_path = '{}/pose_aware_net.pth'.format(config['weights_root'])
+                print('loading pretrained pose_aware_net from {}'.format(ckpt_pose_path))
+                self.pose_aware_net.load_state_dict(
+                    torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
 
-            if config['arch'] == 'biggan':
-                utils.load_weights(
-                    self.G if not (config['use_ema']) else None,
-                    self.D,
-                    config['weights_root'],
-                    name_suffix=config['load_weights'],
-                    G_ema=self.G if config['use_ema'] else None,
-                    strict=False)
-            elif config['arch'] == 'stylegan':
-                if config['mode'] != 'ft':
-                    g_weight_path = '{}/G_{}.pth'.format(config['weights_root'],
-                                                         config['load_weights'])
-                    self.G.load_state_dict(
-                        torch.load(g_weight_path, map_location=lambda storage, loc: storage)),
-                else:
-                    ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
-                    self.G.load_state_dict(ckpt_g["params_ema"])
+                # self.pose_aware_net.load_state_dict(
+                #     torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
 
-                ckpt_d = torch.load(config['ckpt_d'], map_location=lambda storage, loc: storage)
-                self.D.load_state_dict(ckpt_d["params"])
-
+        if self.arch == 'biggan':
+            utils.load_weights(
+                self.G if not (config['use_ema']) else None,
+                self.D,
+                config['weights_root'],
+                name_suffix=config['load_weights'],
+                G_ema=self.G if config['use_ema'] else None,
+                strict=False)
+        elif self.arch == 'stylegan':
+            if config['mode'] != 'ft':
+                g_weight_path = '{}/G_{}.pth'.format(config['weights_root'], config['load_weights'])
+                self.G.load_state_dict(
+                    torch.load(g_weight_path, map_location=lambda storage, loc: storage)),
             else:
-                raise NotImplementedError
+                ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
+                self.G.load_state_dict(ckpt_g["params_ema"])
+
+            ckpt_d = torch.load(config['ckpt_d'], map_location=lambda storage, loc: storage)
+            self.D.load_state_dict(ckpt_d["params"])
+
+        else:
+            raise NotImplementedError
 
         self.G.eval()
         if self.D is not None:
@@ -135,9 +135,17 @@ class DGP(object):
         params = None
         if config['pose_aware']:
             # same z for the same identity
-            self.z = torch.zeros((1, self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
-            self.z = self.z.repeat(config['z_size'], 1)
-            self.z_cache = self.z  # backup
+            if self.arch == 'stylegan':
+                # w+ space for stylegan2. BS * 16 * 512
+                self.z = torch.zeros(
+                    (1, self.G.num_latent, 512),
+                    dtype=torch.float,
+                    device='cuda',
+                    #  requires_grad=True,
+                )
+                self.z.uniform_(-1, 1)  # follows image2stylegan init for non-face classes
+            elif self.arch == 'biggan':
+                self.z = torch.zeros((1, self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
             # self.z.requires_grad = False  # fix z for the same identity
             # optimize encoder along with z
             params = [{
@@ -149,22 +157,22 @@ class DGP(object):
             }]
 
         else:
-            self.pose_aware_net = False
-            self.z = torch.zeros(
-                (config['z_size'], self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
-            self.z = Variable(self.z, requires_grad=True)
+            if self.arch == 'biggan':
+                self.z = torch.zeros(
+                    (config['z_size'], self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
+                self.z = Variable(self.z, requires_grad=True)
+            else:
+                self.z = torch.zeros(
+                    (config['z_size'], self.G.num_latent, 512),
+                    dtype=torch.float,
+                    device='cuda',
+                    #  requires_grad=True,
+                )
+                self.z.uniform_(-1, 1)  # follows image2stylegan init for non-face classes
             params = [self.z]
 
-        # TODO lint
+        # TODO lint code
         if self.arch == 'stylegan':
-            # w+ space for stylegan2. BS * 16 * 512
-            self.z = torch.zeros(
-                (config['z_size'], self.G.num_latent, 512),
-                dtype=torch.float,
-                device='cuda',
-                #  requires_grad=True,
-            )
-            self.z.uniform_(-1, 1)  # follows image2stylegan init for non-face classes
             params = [self.z]
 
             # Generate list of noise tensors
@@ -198,6 +206,7 @@ class DGP(object):
 
             # TODO
             # self.z_optim = SphericalOptimizer(opt_func, var_list, lr=learning_rate)
+
         self.z.requires_grad = True
         self.z_optim = torch.optim.Adam(
             params,
@@ -205,6 +214,7 @@ class DGP(object):
             betas=(self.config['G_B1'], self.config['G_B2']),
             weight_decay=0,
             eps=1e-8)
+        # duplicate y for batch z
         self.y = torch.zeros(config['z_size']).long().cuda()
 
     def reset_G(self):
@@ -253,15 +263,15 @@ class DGP(object):
 
                 if self.pose_aware_net and not self.config['fix_posenet_z']:
                     # detach self.z from history
-                    self.init_hidden()
-                    self.z = self.pose_aware_net(self.z, self.pose)
-                # else:
-                #     z = self.z
+                    # self.init_hidden()
+                    z_prime = self.pose_aware_net(self.z, self.pose)
+                else:
+                    z_prime = self.z
 
                 if self.arch == 'biggan':
-                    x = self.G(self.z, self.G.shared(self.y), use_in=self.use_in[stage])
+                    x = self.G(z_prime, self.G.shared(self.y), use_in=self.use_in[stage])
                 elif self.arch == 'stylegan':
-                    x = self.G(self.z, input_is_latent=True, randomize_noise=True)
+                    x = self.G(z_prime, input_is_latent=True, randomize_noise=True)
                 # apply degradation transform
                 x_map = self.pre_process(x, False)
 
@@ -277,7 +287,7 @@ class DGP(object):
 
                 mse_loss = self.mse(x_map, self.target)
                 # nll corresponds to a negative log-likelihood loss # TODO
-                nll = self.z**2 / 2
+                nll = z_prime**2 / 2
 
                 nll = nll.mean()
                 l1_loss = F.l1_loss(x_map, self.target)
@@ -406,6 +416,9 @@ class DGP(object):
             if load_z_path != '':
                 # todo
                 z_init = torch.load(load_z_path).cuda()
+                if z_init.size(0) == 1:
+                    return
+
                 if self.target.size(0) == 1:  # one img at a time
                     for z in z_init[:, None]:
 
@@ -454,7 +467,12 @@ class DGP(object):
                         self.y.random_(0, self.config['n_classes'])
                         y_all.append(self.y.cpu())
                     if self.arch == 'biggan':
-                        x = self.G(self.z, self.G.shared(self.y))
+                        # needed?
+                        if self.z.size(0) != self.y.size(0):
+                            z = self.z.repeat(self.y.size(0), 1)
+                        else:
+                            z = self.z
+                        x = self.G(z, self.G.shared(self.y))
                     elif self.arch == 'stylegan':
                         x = self.G(self.z, input_is_latent=True, randomize_noise=True)
                     else:
@@ -561,11 +579,11 @@ class DGP(object):
             normalize=True)
 
 
-class PoseAwareNet_1(nn.Module):
+class PoseAwareNet_ZSpace(nn.Module):
 
     def __init__(self, config, dim_z=119):
         # self.pose = config['pose']
-        super(PoseAwareNet_1, self).__init__()
+        super(PoseAwareNet_ZSpace, self).__init__()
         # E_Linear in stylegan?
         self.network = nn.Sequential(
             nn.Linear(dim_z + config['pose_dim'], dim_z),
@@ -577,45 +595,59 @@ class PoseAwareNet_1(nn.Module):
         )
 
     def forward(self, z, pose):
-        assert z.shape[0] == pose.shape[0]
+        if z.size(0) != pose.size(0):
+            assert z.size(0) == 1
+            # repeat for the same identity code
+            z = z.repeat(pose.size(0), 1)
         z = torch.cat([z, pose], dim=1)
         z = self.network(z)
         return z
 
 
-class PoseAwareNet_2(nn.Module):
+class lift_MLP(nn.Module):
 
-    def __init__(self, config, dim_z=119):
-        # self.pose = config['pose']
-        super(PoseAwareNet_2, self).__init__()
-        # E_Linear in stylegan?
-        self.pose_upsample_net = [
-            nn.Linear(config['pose_dim'], config['pose_upsample_dim']),
-            nn.LeakyReLU(negative_slope=0.2)
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+
+        self.fusion_net = [
+            nn.Linear(input_dim, hidden_dim),
+            nn.LeakyReLU(negative_slope=0.2),
+            nn.Linear(hidden_dim, output_dim),
+            nn.LeakyReLU(negative_slope=0.2),
         ]
-        # follows Tachachento's paper
-        for i in range(config['pose_upsample_layer'] - 1):
-            self.pose_upsample_net += nn.Sequential(  # follows Tachachento's paper
-                nn.Linear(config['pose_upsample_dim'], config['pose_upsample_dim']),
-                nn.LeakyReLU(negative_slope=0.2))
-        self.pose_upsample_net = nn.Sequential(*self.pose_upsample_net)
+        self.fusion_net = nn.Sequential(*self.fusion_net)
 
-        self.fusion_net = nn.Sequential(
-            nn.Linear(dim_z + config['pose_upsample_dim'], dim_z),
-            nn.LeakyReLU(negative_slope=0.2),
-            nn.Linear(dim_z, dim_z),
-            nn.LeakyReLU(negative_slope=0.2),
-            # nn.Linear(config['dim_z'], config['dim_z']),
-            # nn.LeakyReLU(negative_slope=0.2),
-        )
+    def forward(self, x):
+        return self.fusion_net(x)
 
-    def forward(self, z, pose):
 
-        assert z.shape[0] == pose.shape[0]
-        pose = self.pose_upsample_net(pose)
-        z = torch.cat([z, pose], dim=1)
-        z = self.fusion_net(z)
-        return z
+class PoseAwareNet_WSpace(nn.Module):
+
+    # like encoder in styleRig
+    def __init__(self, config, dim_z=512, num_rig_layers=4):
+        # self.pose = config['pose']
+        super(PoseAwareNet_WSpace, self).__init__()
+        for i in range(num_rig_layers):
+            self.__setattr__('mlp_{}'.format(i), lift_MLP(config['pose_dim'], 128, dim_z))
+        self.num_rig_layers = num_rig_layers
+
+    def forward(self, w, pose):
+
+        if w.size(0) != pose.size(0):
+            assert w.size(0) == 1
+            # repeat for the same identity code
+            w = w.repeat(pose.size(0), 1, 1)
+        delta_w = [
+            getattr(self, 'mlp_{}'.format(i))(pose.unsqueeze(1)) for i in range(self.num_rig_layers)
+        ]
+        for i in range(self.num_rig_layers, w.size(1)):
+            delta_w.append(torch.zeros_like(delta_w[0]))
+        delta_w = torch.cat(delta_w, 1)
+
+        # only add to first 4 layers of W space
+        w += delta_w
+
+        return w
 
 
 # hinge loss used in BigGAN
