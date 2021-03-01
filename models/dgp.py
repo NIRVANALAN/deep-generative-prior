@@ -63,6 +63,18 @@ class DGP(object):
         if config['random_G']:
             self.random_G()
         else:
+            if config['pose_aware']:
+                self.pose_aware_net = PoseAwareNet_1(config).cuda()
+                if config['dgp_mode'] != 'ft':
+                    # load pose net
+                    ckpt_pose_path = '{}/pose_aware_net.pth'.format(config['weights_root'])
+                    print('loading pretrained pose_aware_net from {}'.format(ckpt_pose_path))
+                    self.pose_aware_net.load_state_dict(
+                        torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
+
+                    # self.pose_aware_net.load_state_dict(
+                    #     torch.load(ckpt_pose_path, map_location=lambda storage, loc: storage))
+
             if config['arch'] == 'biggan':
                 utils.load_weights(
                     self.G if not (config['use_ema']) else None,
@@ -72,29 +84,18 @@ class DGP(object):
                     G_ema=self.G if config['use_ema'] else None,
                     strict=False)
             elif config['arch'] == 'stylegan':
-                ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
+                if config['mode'] != 'ft':
+                    g_weight_path = '{}/G_{}.pth'.format(config['weights_root'],
+                                                         config['load_weights'])
+                    self.G.load_state_dict(
+                        torch.load(g_weight_path, map_location=lambda storage, loc: storage)),
+                else:
+                    ckpt_g = torch.load(config['ckpt_g'], map_location=lambda storage, loc: storage)
+                    self.G.load_state_dict(ckpt_g["params_ema"])
+
                 ckpt_d = torch.load(config['ckpt_d'], map_location=lambda storage, loc: storage)
-                # if config['use_ema']:
-                self.G.load_state_dict(ckpt_g["params_ema"])
                 self.D.load_state_dict(ckpt_d["params"])
 
-                # calculate statistics of mapping network
-                mapping = self.G.style_mlp
-                self.lrelu = torch.nn.LeakyReLU(negative_slope=0.2)
-                gaussian_fit_path = 'gaussian_fit_lsun.pt'
-
-                # if Path(gaussian_fit_path).exists():
-                #     self.gaussian_fit = torch.load(gaussian_fit_path)
-                # else:
-                #     if self.verbose: print("\tRunning Mapping Network")
-                #     # initialize w+ space with mapping network mean and std ! This only applies to face according to Image2stylegan
-                #     with torch.no_grad():
-                #         torch.manual_seed(0)
-                #         latent = torch.randn((1000000, 512), dtype=torch.float32, device="cuda")
-                #         latent_out = torch.nn.LeakyReLU(5)(mapping(latent))
-                #         self.gaussian_fit = {"mean": latent_out.mean(0), "std": latent_out.std(0)}
-                #         torch.save(self.gaussian_fit, gaussian_fit_path)
-                #         if self.verbose: print("\tSaved {}".format(gaussian_fit_path))
             else:
                 raise NotImplementedError
 
@@ -133,19 +134,26 @@ class DGP(object):
         # add pose_aware condition network
         params = None
         if config['pose_aware']:
-            self.pose_aware_net = PoseAwareNet_1(config).cuda()
             # same z for the same identity
             self.z = torch.zeros((1, self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
             self.z = self.z.repeat(config['z_size'], 1)
             self.z_cache = self.z  # backup
             # self.z.requires_grad = False  # fix z for the same identity
-            params = self.pose_aware_net.parameters()
+            # optimize encoder along with z
+            params = [{
+                'params': self.z,
+                'lr': config['z_lrs'][0]
+            }, {
+                'params': self.pose_aware_net.parameters(),
+                'lr': config['encoder_lrs'][0]
+            }]
+
         else:
             self.pose_aware_net = False
             self.z = torch.zeros(
                 (config['z_size'], self.G.dim_z)).normal_().cuda()  # * normal, dim_z=128
             self.z = Variable(self.z, requires_grad=True)
-            params = self.z
+            params = [self.z]
 
         # TODO lint
         if self.arch == 'stylegan':
@@ -157,7 +165,7 @@ class DGP(object):
                 #  requires_grad=True,
             )
             self.z.uniform_(-1, 1)  # follows image2stylegan init for non-face classes
-            params = self.z
+            params = [self.z]
 
             # Generate list of noise tensors
             noise = []  # stores all of the noise tensors
@@ -191,13 +199,12 @@ class DGP(object):
             # TODO
             # self.z_optim = SphericalOptimizer(opt_func, var_list, lr=learning_rate)
         self.z.requires_grad = True
-        self.z_optim = torch.optim.Adam([{
-            'params': params,
-            'lr': self.z_lrs[0]
-        }],
-                                        betas=(self.config['G_B1'], self.config['G_B2']),
-                                        weight_decay=0,
-                                        eps=1e-8)
+        self.z_optim = torch.optim.Adam(
+            params,
+            lr=self.z_lrs[0],
+            betas=(self.config['G_B1'], self.config['G_B2']),
+            weight_decay=0,
+            eps=1e-8)
         self.y = torch.zeros(config['z_size']).long().cuda()
 
     def reset_G(self):
@@ -230,6 +237,7 @@ class DGP(object):
         ##
         for stage, iteration in enumerate(self.iterations):
             # setup the number of features to use in discriminator
+            # import ipdb.set_trace()
             self.criterion.set_ftr_num(self.ftr_num[stage])
 
             for i in range(iteration):
@@ -243,7 +251,7 @@ class DGP(object):
                 if self.update_G:
                     self.G.optim.zero_grad()
 
-                if self.pose_aware_net:
+                if self.pose_aware_net and not self.config['fix_posenet_z']:
                     # detach self.z from history
                     self.init_hidden()
                     self.z = self.pose_aware_net(self.z, self.pose)
@@ -257,13 +265,15 @@ class DGP(object):
                 # apply degradation transform
                 x_map = self.pre_process(x, False)
 
-                # calculate losses in the degradation space
-                # avoid OOM
                 ftr_loss = 0
-                # for idx in range(len(x_map)):
-                #     import ipdb
-                #     ipdb.set_trace()
-                ftr_loss += self.criterion(self.ftr_net, x_map, self.target)
+                # ipdb.set_trace()
+                # BS must be divisible by 4
+                for idx in range(0, len(x_map), 4):
+                    ftr_loss += self.criterion(self.ftr_net, x_map[idx:idx + 4],
+                                               self.target[idx:idx + 4])
+                for idx in range(len(x_map) - len(x_map) % 4, len(x_map)):
+                    ftr_loss += self.criterion(self.ftr_net, x_map[None, idx], self.target[None,
+                                                                                           idx])
 
                 mse_loss = self.mse(x_map, self.target)
                 # nll corresponds to a negative log-likelihood loss # TODO
@@ -275,6 +285,10 @@ class DGP(object):
                 loss = ftr_loss * self.config['w_D_loss'][stage] + \
                        mse_loss * self.config['w_mse'][stage] + \
                        nll * self.config['w_nll']
+
+                if len(self.config['w_l1']) > 1:
+                    loss += l1_loss * self.config['w_l1'][stage]
+
                 # These losses are calculated in the [-1,1] image scale
                 # We record the rescaled MSE and L1 loss, corresponding to [0,1] image scale
                 loss_dict = {
@@ -288,8 +302,8 @@ class DGP(object):
                 if self.use_D:
                     dist_fake = self.D(x_map, self.y)[0].squeeze()
                     d_loss = loss_hinge_gen(dist_fake)  # negative
-                    import ipdb
-                    ipdb.set_trace()
+                    # import ipdb
+                    # ipdb.set_trace()
                     d_loss *= self.config['w_Disc_loss']
                     loss += d_loss
                     loss_dict.update({'Disc_loss': d_loss})
@@ -309,10 +323,15 @@ class DGP(object):
 
                 if i == 0 or (i + 1) % self.config['print_interval'] == 0:
                     if self.rank == 0:
-                        print(
-                            ', '.join(['Stage: [{0}/{1}]'.format(stage + 1, len(self.iterations))] +
-                                      ['Iter: [{0}/{1}]'.format(i + 1, iteration)] +
-                                      ['%s : %+4.4f' % (key, loss_dict[key]) for key in loss_dict]))
+                        log_info = ', '.join(
+                            ['Stage: [{0}/{1}]'.format(stage + 1, len(self.iterations))] +
+                            ['Iter: [{0}/{1}]'.format(i + 1, iteration)] +
+                            ['%s : %+4.4f' % (key, loss_dict[key]) for key in loss_dict])
+                        print(log_info)
+
+                        with open(Path(self.config['exp_path']) / 'log.txt', 'a+') as f:
+                            f.write(log_info + '\n')
+
                     # save image sheet of the reconstruction process
                     save_imgs = torch.cat((save_imgs, x), dim=0)
                     torchvision.utils.save_image(
@@ -387,12 +406,44 @@ class DGP(object):
             if load_z_path != '':
                 # todo
                 z_init = torch.load(load_z_path).cuda()
-                for z in z_init[:, None]:
-                    x = self.G(z, self.G.shared(self.y))
-                    x = self.pre_process(x)
-                    z_all.append(z.cpu())
-                    ftr_loss = self.criterion(self.ftr_net, x, self.target)
-                    loss_all.append(ftr_loss.view(1).cpu())
+                if self.target.size(0) == 1:  # one img at a time
+                    for z in z_init[:, None]:
+
+                        if self.arch == 'biggan':
+                            x = self.G(
+                                z,
+                                self.G.shared(self.y),
+                            )
+                        elif self.arch == 'stylegan':
+                            x = self.G(z, input_is_latent=True, randomize_noise=True)
+
+                        x = self.pre_process(x)
+                        z_all.append(z.cpu())
+                        ftr_loss = self.criterion(self.ftr_net, x, self.target)
+                        loss_all.append(ftr_loss.view(1).cpu())
+                else:
+                    for idx in range(self.target.size(0)):
+                        for z in z_init[:, None]:
+                            if self.arch == 'biggan':
+                                x = self.G(
+                                    z,
+                                    self.G.shared(self.y),
+                                )
+                            elif self.arch == 'stylegan':
+                                x = self.G(z, input_is_latent=True, randomize_noise=True)
+
+                            x = self.pre_process(x)
+                            z_all.append(z.cpu())
+                            ftr_loss = self.criterion(self.ftr_net, x, self.target[None, idx])
+                            loss_all.append(ftr_loss.view(1).cpu())
+
+                        loss_all = torch.cat(loss_all)
+                        idx_minloss = torch.argmin(loss_all)
+                        self.z[None, idx].copy_(z_all[idx_minloss])
+                        z_all, y_all, loss_all = [], [], []
+
+                    return
+
             else:
                 for i in range(self.select_num):
                     self.z.normal_(mean=0, std=self.config['sample_std'])

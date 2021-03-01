@@ -403,7 +403,13 @@ def join_strings(base_string, strings):
 
 
 # Load a model's weights
-def load_weights(G, D, weights_root, name_suffix=None, G_ema=None, strict=False):
+def load_weights(G,
+                 D,
+                 weights_root,
+                 name_suffix=None,
+                 G_ema=None,
+                 strict=False,
+                 weights_root_bk='pretrained'):
 
     def map_func(storage, location):
         return storage.cuda()
@@ -419,11 +425,16 @@ def load_weights(G, D, weights_root, name_suffix=None, G_ema=None, strict=False)
                 map_location=map_func),
             strict=strict)
     if D is not None:
-        D.load_state_dict(
-            torch.load(
+        try:
+            ckpt_d = torch.load(
                 '%s/%s.pth' % (weights_root, join_strings('_', ['D', name_suffix])),
-                map_location=map_func),
-            strict=strict)
+                map_location=map_func)
+        except:
+            # load original D
+            ckpt_d = torch.load(
+                '%s/%s.pth' % (weights_root_bk, join_strings('_', ['D', '256'])),
+                map_location=map_func)
+        D.load_state_dict(ckpt_d, strict=strict)
     if G_ema is not None:
         print('Loading ema generator...')
         G_ema.load_state_dict(

@@ -31,8 +31,9 @@ if not os.path.exists('{}/images'.format(config['exp_path'])):
     os.makedirs('{}/images'.format(config['exp_path']))
 if not os.path.exists('{}/images_sheet'.format(config['exp_path'])):
     os.makedirs('{}/images_sheet'.format(config['exp_path']))
-if not os.path.exists('{}'.format(config['save_weights_dir'])):
-    os.makedirs('{}'.format(config['save_weights_dir']))
+if config['save_weights_dir'] != '':
+    if not os.path.exists('{}'.format(config['save_weights_dir'])):
+        os.makedirs('{}'.format(config['save_weights_dir']))
 
 # prepare dataset loader
 
@@ -46,7 +47,9 @@ train_dataset = ImagePoseDataset(
 
 # sampler = utils.DistributedSampler(train_dataset) if config['dist'] else None
 # use all samples to finetune
-bs = len(train_dataset) if config['mode'] == 'ft' else 1
+bs = len(train_dataset) if (config['mode'] == 'ft' or config['optimize_together']) else 1
+bs = min(bs, 25)
+
 print(config['mode'])
 
 train_loader = DataLoader(
@@ -58,6 +61,8 @@ train_loader = DataLoader(
     pin_memory=False)
 
 config['z_size'] = bs
+
+print('batch size: {}'.format(bs))
 
 # cls_category = torch.Tensor([config['class']]).long()
 cls_category = None
@@ -95,9 +100,13 @@ for i, meta_data in enumerate(train_loader):
     # start reconstruction
     loss_dict = model.run(save_interval=config['save_interval'])
 
-torch.save(model.G.state_dict(),
-           '%s/G_%s_%s.pth' % (config['save_weights_dir'], category.item(), config['dgp_mode']))
-torch.save(model.z,
-           '%s/z_%s_%s.pth' % (config['save_weights_dir'], category.item(), config['dgp_mode']))
+if config['mode'] == 'ft':
+    torch.save(model.G.state_dict(),
+               '%s/G_%s_%s.pth' % (config['save_weights_dir'], category.item(), config['dgp_mode']))
+    torch.save(model.z,
+               '%s/z_%s_%s.pth' % (config['save_weights_dir'], category.item(), config['dgp_mode']))
+    if config['pose_aware']:
+        torch.save(model.pose_aware_net.state_dict(),
+                   '%s/pose_aware_net.pth' % (config['save_weights_dir']))
 
 # 1. fine tuned G. 2. output directory

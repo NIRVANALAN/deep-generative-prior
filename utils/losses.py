@@ -28,8 +28,7 @@ class DiscriminatorLoss(object):
     def __call__(self, D, fake_img, real_img):
         if self.data_parallel:
             with torch.no_grad():
-                d, real_feature = nn.parallel.data_parallel(
-                    D, real_img.detach())
+                d, real_feature = nn.parallel.data_parallel(D, real_img.detach())
             d, fake_feature = nn.parallel.data_parallel(D, fake_img)
         else:
             with torch.no_grad():
@@ -38,8 +37,7 @@ class DiscriminatorLoss(object):
         D_penalty = 0
         for i in range(self.ftr_num):
             f_id = -i - 1
-            D_penalty = D_penalty + F.l1_loss(fake_feature[f_id],
-                                              real_feature[f_id])
+            D_penalty = D_penalty + F.l1_loss(fake_feature[f_id], real_feature[f_id])
         return D_penalty
 
     def set_ftr_num(self, ftr_num):

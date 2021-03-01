@@ -47,10 +47,20 @@ def add_dgp_parser(parser):
     parser.add_argument(
         '--dgp_mode', type=str, default='reconstruct', help='DGP mode (default: %(default)s)')
     parser.add_argument(
+        '--optimize_together',
+        action='store_true',
+        default=False,
+        help='Inverse all degraded images together?? (default: %(default)s)')
+    parser.add_argument(
         '--random_G',
         action='store_true',
         default=False,
         help='Use randomly initialized generator? (default: %(default)s)')
+    parser.add_argument(
+        '--fix_posenet_z',
+        action='store_true',
+        default=False,
+        help='Fix code z in Pose-aware-network? (default: %(default)s)')
     parser.add_argument(
         '--update_G',
         action='store_true',
@@ -114,6 +124,12 @@ def add_dgp_parser(parser):
         default=0.001,
         help='Weight for the negative log-likelihood loss (default: %(default)s)')
     parser.add_argument(
+        '--w_l1',
+        type=float,
+        default=[0.0],
+        nargs='+',
+        help='L1 loss weight (default: %(default)s)')
+    parser.add_argument(
         '--w_mse',
         type=float,
         default=[0.1],
@@ -147,6 +163,12 @@ def add_dgp_parser(parser):
         default=[1e-6, 2e-5, 1e-5, 1e-6],
         nargs='+',
         help='Learning rate steps of Generator')
+    parser.add_argument(
+        '--encoder_lrs',
+        type=float,
+        default=[1e-1, 1e-3, 1e-5, 1e-6],
+        nargs='+',
+        help='Learning rate steps of pose-identity encoder')
     parser.add_argument(
         '--z_lrs',
         type=float,
